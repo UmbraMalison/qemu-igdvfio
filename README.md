@@ -49,12 +49,12 @@ $ ./configure --prefix=/usr --sysconfdir=/etc --python=/usr/bin/python2 --smbd=/
               
 $ make
 
+$ cd ..
+
 seabios
 -------
 
 $ git clone git://git.qemu.org/seabios.git
-
-$ cd ..
 
 $ cd seabios
 
