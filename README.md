@@ -14,6 +14,10 @@ The code in this project is specifically written for the following platform
 Example qemu-command-line:
 
 qemu-system-x86_64 -cpu host -M q35 -L biosdir -bios biosdir/bios.bin -acpitable file=biosdir/q35-acpi-dsdt.aml -m 2048 -enable-kvm -device vfio-pci,host=00:02.0,id=vga1,x-vga=on,addr=2.0 -usb -drive file=../GUEST.qcow2,if=virtio,snapshot=on -vga none
+
+Host Kernel-command-line should contain:
+    * intel_iommu=on,igfx_off
+    * modprobe.blacklist=i915,intel_gtt,intel_agp,drm
     
 Build Instructions
 ==================
