@@ -3,6 +3,7 @@ qemu-igdvfio
 
 Extending VFIO framework to support Intel Integrated Graphics Devices
 
+
 The code in this project is specifically written for the following platform:
 * INTEL DQ67OW
 *   HOST-BRIDGE: 8086:0100
@@ -18,6 +19,16 @@ qemu-system-x86_64 -cpu host -M q35 -L biosdir -bios biosdir/bios.bin -acpitable
 Host Kernel-command-line should contain:
 * intel_iommu=on,igfx_off
 * modprobe.blacklist=i915,intel_gtt,intel_agp,drm
+
+
+STATUS
+======
+Intelfb appears to be working. Software rendering appears to be working.
+
+Hardware accleration is not working.
+
+Errors are, STUCK on BLITTER RING and FAILED to RESET device.
+
     
 Build Instructions
 ==================
