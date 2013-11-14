@@ -1,0 +1,50 @@
+diff --git a/Makefile b/Makefile
+index 3218970..7afe24f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -21,7 +21,7 @@ LD=$(CROSS_PREFIX)ld
+ OBJCOPY=$(CROSS_PREFIX)objcopy
+ OBJDUMP=$(CROSS_PREFIX)objdump
+ STRIP=$(CROSS_PREFIX)strip
+-PYTHON=python
++PYTHON=python2
+ CPP=cpp
+ IASL:=iasl
+ 
+diff --git a/src/fw/dev-q35.h b/src/fw/dev-q35.h
+index 6ae039f..208d650 100644
+--- a/src/fw/dev-q35.h
++++ b/src/fw/dev-q35.h
+@@ -3,7 +3,9 @@
+ 
+ #include "types.h"      // u16
+ 
+-#define PCI_DEVICE_ID_INTEL_Q35_MCH     0x29c0
++//#define PCI_DEVICE_ID_INTEL_Q35_MCH     0x29c0
++// COUGAR POINT
++#define PCI_DEVICE_ID_INTEL_Q35_MCH     0x0100
+ #define Q35_HOST_BRIDGE_PAM0            0x90
+ #define Q35_HOST_BRIDGE_SMRAM           0x9d
+ #define Q35_HOST_BRIDGE_PCIEXBAR        0x60
+@@ -14,7 +16,9 @@
+ #define Q35_HOST_PCIE_START_BUS_NUMBER  0
+ #define Q35_HOST_PCIE_END_BUS_NUMBER    255
+ 
+-#define PCI_DEVICE_ID_INTEL_ICH9_LPC    0x2918
++//#define PCI_DEVICE_ID_INTEL_ICH9_LPC    0x2918
++// COUGAR POINT
++#define PCI_DEVICE_ID_INTEL_ICH9_LPC	0x1c4e
+ #define ICH9_LPC_PMBASE                 0x40
+ #define ICH9_LPC_PMBASE_RTE             0x1
+ 
+@@ -25,7 +29,9 @@
+ #define ICH9_LPC_PIRQ_ROUT_IRQEN       0x80
+ #define ICH9_LPC_PORT_ELCR1            0x4d0
+ #define ICH9_LPC_PORT_ELCR2            0x4d1
+-#define PCI_DEVICE_ID_INTEL_ICH9_SMBUS 0x2930
++//#define PCI_DEVICE_ID_INTEL_ICH9_SMBUS 0x2930
++// COUGAR POINT
++#define PCI_DEVICE_ID_INTEL_ICH9_SMBUS 0x1c22
+ #define ICH9_SMB_SMB_BASE              0x20
+ #define ICH9_SMB_HOSTC                 0x40
+ #define ICH9_SMB_HOSTC_HST_EN          0x01
