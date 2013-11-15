@@ -26,7 +26,53 @@ Host Kernel-command-line should contain:
 * intel_iommu=on,igfx_off
 * modprobe.blacklist=i915,intel_gtt,intel_agp,drm
 
-Video Bios
+Un-Modified Guest
+-----------------
+
+For an unmodified guest, changes need to be made in seabios and qemu to accept at least the LPC device ID of your host.
+qemu/include/hw/pci/pci_ids.h
+
+* #define PCI_DEVICE_ID_INTEL_ICH9_6    0x(HOST SMBUS)
+* #define PCI_DEVICE_ID_INTEL_ICH9_8    0x(HOST LPC)
+* #define PCI_DEVICE_ID_INTEL_Q35_MCH   0x(HOST HOST-BRIDGE)
+qemu/hw/isa/lpc_ich9.c
+* k->vendor_id = PCI_VENDOR_ID_INTEL;
+* k->device_id = PCI_DEVICE_ID_INTEL_ICH9_8;
+* k->revision = ICH9_A2_LPC_REVISION;
+qemu/hw/pci-host/q35.c
+* k->vendor_id = PCI_VENDOR_ID_INTEL;
+* k->device_id = PCI_DEVICE_ID_INTEL_Q35_MCH;
+* k->revision = MCH_HOST_BRIDGE_REVISION_DEFAULT;
+seabios/src/fw/dev-q35.h
+* #define PCI_DEVICE_ID_INTEL_ICH9_SMBUS    0x(HOST SMBUS)
+* #define PCI_DEVICE_ID_INTEL_ICH9_LPC      0x(HOST LPC)
+* #define PCI_DEVICE_ID_INTEL_Q35_MCH       0x(HOST HOST-BRIDGE)
+
+
+Modified Guest
+--------------
+
+For a modified guest, which may be more successful as QEMU will be running as it should, you will need to modify the guest kernels i915 driver to accept QEMU's LPC device ID. Because these changes reverse all changes in seabios, you no longer need the bios options in the qemu-command-line. instead use the qemu built in seabios (default).
+
+qemu/include/hw/pci/pci_ids.h
+* #define PCI_DEVICE_ID_INTEL_ICH9_6    0x2930
+* #define PCI_DEVICE_ID_INTEL_ICH9_8    0x2918
+* #define PCI_DEVICE_ID_INTEL_Q35_MCH   0x29c0
+qemu/hw/isa/lpc_ich9.c
+* k->vendor_id = PCI_VENDOR_ID_INTEL;
+* k->device_id = PCI_DEVICE_ID_INTEL_ICH9_8;
+* k->revision = ICH9_A2_LPC_REVISION;
+qemu/hw/pci-host/q35.c
+* k->vendor_id = PCI_VENDOR_ID_INTEL;
+* k->device_id = PCI_DEVICE_ID_INTEL_Q35_MCH;
+* k->revision = MCH_HOST_BRIDGE_REVISION_DEFAULT;
+seabios/src/fw/dev-q35.h
+* #define PCI_DEVICE_ID_INTEL_ICH9_SMBUS    0x2930
+* #define PCI_DEVICE_ID_INTEL_ICH9_LPC      0x2918
+* #define PCI_DEVICE_ID_INTEL_Q35_MCH       0x29c0
+
+
+ Bios
 ==========
 
 https://01.org/linuxgraphics/documentation/how-dump-video-bios-0
