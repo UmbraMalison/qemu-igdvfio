@@ -1,0 +1,202 @@
+#!/bin/bash
+# Author: Andrew Barnes <andy@outsideglobe.com>
+# Example Usage: StartVM 0 1 0 0 = no monitor, auto assign, read only, linux
+
+MONITOR=$1
+ASSIGN_MODE=$2 #0=none,1=auto,2=manual
+WRITE=$3 #0=RO,1=RW
+OS=$4 #0=linux 1=windows
+
+#---------------------------------------
+# Configure script based on input params
+#---------------------------------------
+
+if [ $WRITE -eq 1 ]; then
+        SNAPSHOT=off
+else
+        SNAPSHOT=on
+fi
+
+if [ $OS -eq 0 ]; then
+    file=../IGDVFIO_GUEST.qcow2
+else
+    file=../IGDVFIO_GUEST_WIN.qcow2
+fi
+
+if [ $MONITOR -eq 0 ]; then
+    VGA="-vga none"
+else
+    VGA="-vga std"
+fi
+
+
+#-----------------------
+# Find vfio-pci devices
+#-----------------------
+
+. PCI_IDS
+
+VGA_COUNT=0
+HDA_COUNT=0
+ETH_COUNT=0
+USB_COUNT=0
+
+
+# set the Internal Field Separator for Bash to carriage return
+IFS="
+"
+
+# loop through results from lspci in machine readable format
+for line in `lspci -mm`; do
+
+	# capture the address of a device
+        query_hwaddr=`echo $line | awk '{ print $1 }'`
+
+	# Find a devices with stub driver loaded (requirement for unbinding VGA)
+        if [ `lspci -k -s $query_hwaddr | grep -c "pci-stub"` -eq 1 ]; then
+		#if [[ "$line" == *"VGA"* ]]; then
+	        	echo "pci-stub device address found: $query_hwaddr"
+			NEW_VTD="-device pci-assign,host=$query_hwaddr"
+                	VTD="$VTD $NEW_VTD"
+		#fi
+	elif [ `lspci -k -s $query_hwaddr | grep -c "vfio-pci"` -eq 1 ]; then
+		#echo "vfio-pci device address found: $query_hwaddr"
+
+		# get vendor id and device id
+		vendev=`lspci -n -s $query_hwaddr | awk '{ print $3 }'`
+		tmp=${vendev//[()]/}
+		vendor=${tmp%:*}
+	        device=${tmp#*:}
+		
+		echo "$query_hwaddr $vendor:$device"
+
+		NEW_VTD=""
+
+		VGA_COUNT=$(($VGACOUNT + 1))
+        if [[ "$device" == "$DEVICE_IGD_HASWELL" ]]; then
+                        # Intel Graphics Device
+                        VGA_COUNT=$(($VGACOUNT + 1))
+                        NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=vga$VGA_COUNT,x-vga=on,addr="2.0",romfile=biosdir/IGD.rom"
+		if [[ "$device" == "$DEVICE_IGD_2000" ]]; then
+                        # Intel Graphics Device HD 2000 (found on Core i5 2nd Gen - Sandy Bridge Q67 DESKTOP)
+                        VGA_COUNT=$(($VGACOUNT + 1))
+                        NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=vga$VGA_COUNT,x-vga=on,addr="2.0",romfile=biosdir/IGDQ67.rom"
+		elif [[ "$device" == "$DEVICE_IGDM_2000" ]]; then
+			# Intel Graphics Device HD 2000 (found on Core i5 2nd Gen - Sandy Bridge Q67M LAPTOP)
+			VGA_COUNT=$(($VGACOUNT + 1))
+	                NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=vga$VGA_COUNT,x-vga=on,addr="2.0",romfile=biosdir/IGDQ67M.rom"
+		elif [[ "$device" == "$DEVICE_HD5450" ]]; then
+			# HD5450
+			VGA_COUNT=$(($VGACOUNT + 1))
+			NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=vga$VGA_COUNT,x-vga=on,addr="5.0",x-bustype=2,romfile=biosdir/hd5450.rom"
+		elif [[ "$device" == "$DEVICE_HD7770" ]]; then
+			# HD7770
+			VGA_COUNT=$(($VGACOUNT + 1))
+			NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=vga$VGA_COUNT,x-vga=on,addr="5.0",x-bustype=2,romfile=biosdir/hd7770.rom"
+		else
+			for eth in ${DEVICE_ETH[*]}; do
+				if [[ "$device" == "$eth" ]]; then
+					ETH_COUNT=$(($ETH_COUNT + 1))
+	       	        	        NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=eth$ETH_COUNT"
+				fi
+			done
+	
+			for usb in ${DEVICE_USB[*]}; do
+				if [[ "$device" == "$usb" ]]; then
+					USB_COUNT=$(($USB_COUNT + 1))
+					NEW_VTD="-device vfio-pci,host=$query_hwaddr,id=usb$USB_COUNT,x-bustype=2"
+				fi
+			done
+		fi
+
+		echo $NEW_VTD
+
+		if [ -n $NEW_VTD ]; then
+			VTD="$VTD $NEW_VTD"
+		fi
+	fi
+done
+
+# set the Internal Field Separator for Bash to space.
+IFS=" "
+
+
+#------------
+# QEMU config
+#------------
+
+# CORE
+######
+NAM="-name IGDVFIO_GUEST"
+CPU="-cpu host -smp 4,cores=4,threads=1,sockets=1"
+#CPU="-cpu qemu64"
+MEM="-m 2048"
+CHP="-M q35 -L /home/andy/biosdir -bios /home/andy/biosdir/bios.bin -acpitable file=/home/andy/biosdir/q35-acpi-dsdt.aml" 
+#CHP=""
+KVM="-enable-kvm"
+
+
+# HARD DRIVE
+############
+HDD="-drive file=$file,if=virtio,snapshot=$SNAPSHOT"
+
+# CD-ROMS
+#########
+DRI="-drive file=virtio-win-0.1-30.iso"
+
+# GRAPHICS
+#VGA="-vga std"
+
+# NETWORK
+#########
+macaddr="00:50:56:10:08:23"
+
+if [ $ETH_COUNT -eq 0 ] ; then
+	NET="-net nic,macaddr=$macaddr,model=virtio -net bridge,br=br0"
+else
+	NET="-net none"
+fi
+
+# HUMAN INTERACTION DEVICES
+###########################
+LEGACYUSB="-usb -usbdevice host:0b38:0010 -usbdevice host:046d:c016 -usbdevice host:048d:1165"
+
+# MISC
+######
+CONFIG="-boot d"
+
+# MANUAL DIRECT ASSIGNMENT
+##########################
+$VTD_VGA=""
+$VTD_ETH=""
+$VTD_USB=""
+
+EXE="/home/andy/qemu/x86_64-softmmu/qemu-system-x86_64"
+#EXE="qemu-system-x86_64"
+
+# Load modules
+##############
+modprobe kvm
+modprobe kvm_intel
+
+# Build qemu-command-line
+#########################
+if [ $ASSIGN_MODE -eq 0 ]; then
+	# NONE
+	CMD="$EXE $NAM $CPU $CHP $MEM $KVM $LEGACYUSB $NET $HDD $VGA $DEBUG $CDR" # NO ASSIGNMENT
+elif [ $ASSIGN_MODE -eq 1 ]; then 
+	# AUTO
+	CMD="$EXE $NAM $CPU $CHP $MEM $KVM $VTD $LEGACYUSB $NET $HDD $VGA $CDR" # AUTO ASSIGNMENT
+else
+	# MANUAL
+	CMD="$EXE $NAM $CPU $CHP $MEM $KVM $VTD_ETH $VTD_VGA $LEGACYUSB $NET $HDD $VGA $CDR" # MANUAL ASSIGNMENT
+fi
+
+#----
+# RUN
+#----
+
+echo $CMD
+read
+$CMD &> $0.log &
+#$CMD

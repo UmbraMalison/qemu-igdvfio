@@ -1,0 +1,23 @@
+#!/bin/bash
+# Author: Andrew Barnes <andy@outsideglobe.com>
+
+. PCI_IDS
+
+DRIVER=vfio-pci
+
+modprobe $DRIVER
+
+SYSTEM=($VENDOR_INTEL:$DEVICE_IGD_HASWELL) # IGD
+
+for vendev in ${SYSTEM[*]}; do
+	BDF=`lspci -mm -d $vendev | awk '{ print $1 }'`
+	tmp=${vendev//[()]/}
+	vendor=${tmp%:*}
+	device=${tmp#*:}
+
+	echo "UNBIND: $BDF $vendor:$device"
+        echo 0000:$BDF > /sys/bus/pci/devices/0000:$BDF/driver/unbind	
+
+	echo "INIT: $BDF $vendor:$device"
+        echo $vendor $device > /sys/bus/pci/drivers/$DRIVER/new_id
+done
