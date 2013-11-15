@@ -1,5 +1,5 @@
 diff --git a/hw/isa/lpc_ich9.c b/hw/isa/lpc_ich9.c
-index 19b2198..f5fa223 100644
+index 19b2198..5a48912 100644
 --- a/hw/isa/lpc_ich9.c
 +++ b/hw/isa/lpc_ich9.c
 @@ -6,6 +6,7 @@
@@ -112,13 +112,13 @@ index 19b2198..f5fa223 100644
 +    /* For a UN-MODIFIED guest, the following 3 registers need to be read from the host.
 +     * alternatively, modify i915_drv.c, intel_detect_pch, add a check for
 +     * PCI_DEVICE_ID_INTEL_ICH9_8 and copy the settings from the PCH you desire */
-+    //k->vendor_id = PCI_VENDOR_ID_INTEL;
++//    k->vendor_id = PCI_VENDOR_ID_INTEL;
 +    k->vendor_id = host_pci_read_config(0,0x1f,0,0x00,2);
 +
-+    //k->device_id = PCI_DEVICE_ID_INTEL_ICH9_8;
++//    k->device_id = PCI_DEVICE_ID_INTEL_ICH9_8;
 +    k->device_id = host_pci_read_config(0,0x1f,0,0x02,2);
 +
-+    //k->revision = ICH9_A2_LPC_REVISION;
++//    k->revision = ICH9_A2_LPC_REVISION;
 +    k->revision = host_pci_read_config(0,0x1f,0,0x08,1);
 +
 +    k->class_id = PCI_CLASS_BRIDGE_ISA;
@@ -126,7 +126,7 @@ index 19b2198..f5fa223 100644
  
  static const TypeInfo ich9_lpc_info = {
 diff --git a/hw/misc/vfio.c b/hw/misc/vfio.c
-index fe95e03..a458340 100644
+index fe95e03..d61a11f 100644
 --- a/hw/misc/vfio.c
 +++ b/hw/misc/vfio.c
 @@ -5,6 +5,7 @@
@@ -343,29 +343,7 @@ index fe95e03..a458340 100644
  }
  
  static void vfio_vga_quirk_teardown(VFIODevice *vdev)
-@@ -1958,10 +2092,6 @@ static uint32_t vfio_pci_read_config(PCIDevice *pdev, uint32_t addr, int len)
- 
-     val = (emu_val & emu_bits) | (phys_val & ~emu_bits);
- 
--    DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
--            vdev->host.domain, vdev->host.bus, vdev->host.slot,
--            vdev->host.function, addr, len, val);
--
-     return val;
- }
- 
-@@ -1971,10 +2101,6 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
-     VFIODevice *vdev = DO_UPCAST(VFIODevice, pdev, pdev);
-     uint32_t val_le = cpu_to_le32(val);
- 
--    DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
--            vdev->host.domain, vdev->host.bus, vdev->host.slot,
--            vdev->host.function, addr, val, len);
--
-     /* Write everything to VFIO, let it filter out what we can't write */
-     if (pwrite(vdev->fd, &val_le, len, vdev->config_offset + addr) != len) {
-         error_report("%s(%04x:%02x:%02x.%x, 0x%x, 0x%x, 0x%x) failed: %m",
-@@ -2077,11 +2203,32 @@ static bool vfio_listener_skipped_section(MemoryRegionSection *section)
+@@ -2077,11 +2211,32 @@ static bool vfio_listener_skipped_section(MemoryRegionSection *section)
      return !memory_region_is_ram(section->mr);
  }
  
@@ -399,7 +377,7 @@ index fe95e03..a458340 100644
      hwaddr iova, end;
      void *vaddr;
      int ret;
-@@ -2130,7 +2277,7 @@ static void vfio_listener_region_del(MemoryListener *listener,
+@@ -2130,7 +2285,7 @@ static void vfio_listener_region_del(MemoryListener *listener,
                                       MemoryRegionSection *section)
  {
      VFIOContainer *container = container_of(listener, VFIOContainer,
@@ -408,7 +386,7 @@ index fe95e03..a458340 100644
      hwaddr iova, end;
      int ret;
  
-@@ -2169,13 +2316,41 @@ static void vfio_listener_region_del(MemoryListener *listener,
+@@ -2169,13 +2324,41 @@ static void vfio_listener_region_del(MemoryListener *listener,
  }
  
  static MemoryListener vfio_memory_listener = {
@@ -451,7 +429,7 @@ index fe95e03..a458340 100644
  }
  
  /*
-@@ -2510,6 +2685,77 @@ static void vfio_unmap_bars(VFIODevice *vdev)
+@@ -2510,6 +2693,77 @@ static void vfio_unmap_bars(VFIODevice *vdev)
      }
  }
  
@@ -529,7 +507,7 @@ index fe95e03..a458340 100644
  /*
   * General setup
   */
-@@ -3092,10 +3338,10 @@ static int vfio_connect_container(VFIOGroup *group)
+@@ -3092,10 +3346,10 @@ static int vfio_connect_container(VFIOGroup *group)
              return -errno;
          }
  
@@ -542,7 +520,7 @@ index fe95e03..a458340 100644
      } else {
          error_report("vfio: No available IOMMU models");
          g_free(container);
-@@ -3125,9 +3371,7 @@ static void vfio_disconnect_container(VFIOGroup *group)
+@@ -3125,9 +3379,7 @@ static void vfio_disconnect_container(VFIOGroup *group)
      group->container = NULL;
  
      if (QLIST_EMPTY(&container->group_list)) {
@@ -553,7 +531,7 @@ index fe95e03..a458340 100644
          QLIST_REMOVE(container, next);
          DPRINTF("vfio_disconnect_container: close container->fd\n");
          close(container->fd);
-@@ -3343,7 +3587,7 @@ static int vfio_get_device(VFIOGroup *group, const char *name, VFIODevice *vdev)
+@@ -3343,7 +3595,7 @@ static int vfio_get_device(VFIOGroup *group, const char *name, VFIODevice *vdev)
      ret = ioctl(vdev->fd, VFIO_DEVICE_GET_IRQ_INFO, &irq_info);
      if (ret) {
          /* This can fail for an old kernel or legacy PCI dev */
@@ -562,7 +540,7 @@ index fe95e03..a458340 100644
          ret = 0;
      } else if (irq_info.count == 1) {
          vdev->pci_aer = true;
-@@ -3525,6 +3769,10 @@ static int vfio_initfn(PCIDevice *pdev)
+@@ -3525,6 +3777,10 @@ static int vfio_initfn(PCIDevice *pdev)
          return -ENOENT;
      }
  
@@ -573,7 +551,7 @@ index fe95e03..a458340 100644
      snprintf(path, sizeof(path), "%04x:%02x:%02x.%01x",
              vdev->host.domain, vdev->host.bus, vdev->host.slot,
              vdev->host.function);
-@@ -3585,6 +3833,10 @@ static int vfio_initfn(PCIDevice *pdev)
+@@ -3585,6 +3841,10 @@ static int vfio_initfn(PCIDevice *pdev)
  
      vfio_map_bars(vdev);
  
@@ -584,7 +562,7 @@ index fe95e03..a458340 100644
      ret = vfio_add_capabilities(vdev);
      if (ret) {
          goto out_teardown;
-@@ -3654,6 +3906,8 @@ static void vfio_pci_reset(DeviceState *dev)
+@@ -3654,6 +3914,8 @@ static void vfio_pci_reset(DeviceState *dev)
      DPRINTF("%s(%04x:%02x:%02x.%x)\n", __func__, vdev->host.domain,
              vdev->host.bus, vdev->host.slot, vdev->host.function);
  
@@ -594,7 +572,7 @@ index fe95e03..a458340 100644
  
      if (vdev->reset_works && (vdev->has_flr || !vdev->has_pm_reset) &&
 diff --git a/hw/pci-host/q35.c b/hw/pci-host/q35.c
-index c043998..585f988 100644
+index c043998..769a069 100644
 --- a/hw/pci-host/q35.c
 +++ b/hw/pci-host/q35.c
 @@ -6,6 +6,7 @@
@@ -803,7 +781,7 @@ index c043998..585f988 100644
 +     * Further more, I have only found reason for the LPC to match the host
 +     * for the PCH identification. No mention about the host-bridge. */
 +
-+//  k->vendor_id = PCI_VENDOR_ID_INTEL;
++//    k->vendor_id = PCI_VENDOR_ID_INTEL;
 +    k->vendor_id = host_pci_read_config(0,0,0,0x00,2);
 +
 +//    k->device_id = PCI_DEVICE_ID_INTEL_Q35_MCH;
@@ -1108,7 +1086,7 @@ index b783e68..b088bc8 100644
  bool pci_bus_is_root(PCIBus *bus);
  void pci_bus_new_inplace(PCIBus *bus, size_t bus_size, DeviceState *parent,
 diff --git a/include/hw/pci/pci_ids.h b/include/hw/pci/pci_ids.h
-index 4c0002b..403c63f 100644
+index 4c0002b..2dd4532 100644
 --- a/include/hw/pci/pci_ids.h
 +++ b/include/hw/pci/pci_ids.h
 @@ -128,9 +128,13 @@
@@ -1116,14 +1094,14 @@ index 4c0002b..403c63f 100644
  #define PCI_DEVICE_ID_INTEL_ICH9_4       0x2914
  #define PCI_DEVICE_ID_INTEL_ICH9_5       0x2919
 -#define PCI_DEVICE_ID_INTEL_ICH9_6       0x2930
-+//#define PCI_DEVICE_ID_INTEL_ICH9_6       0x2930
-+// COUGAR POINT
-+#define PCI_DEVICE_ID_INTEL_ICH9_6       0x1c22
++//#define PCI_DEVICE_ID_INTEL_ICH9_6       0x2930 /* Q35 QEMU */
++//#define PCI_DEVICE_ID_INTEL_ICH9_6       0x1c22 /* Q67 COUGAR POINT */
++#define PCI_DEVICE_ID_INTEL_ICH9_6       0x8c22 /* HASWELL */
  #define PCI_DEVICE_ID_INTEL_ICH9_7       0x2916
 -#define PCI_DEVICE_ID_INTEL_ICH9_8       0x2918
-+//#define PCI_DEVICE_ID_INTEL_ICH9_8       0x2918
-+// COUGAR POINT
-+#define PCI_DEVICE_ID_INTEL_ICH9_8       0x1c4e
++//#define PCI_DEVICE_ID_INTEL_ICH9_8       0x2918 /* Q35 QEMU */
++//#define PCI_DEVICE_ID_INTEL_ICH9_8       0x1c4e /* Q67 COUGAR POINT */
++#define PCI_DEVICE_ID_INTEL_ICH9_8       0x8c4e /* HASWELL */
  
  #define PCI_DEVICE_ID_INTEL_82801I_UHCI1 0x2934
  #define PCI_DEVICE_ID_INTEL_82801I_UHCI2 0x2935
@@ -1132,9 +1110,9 @@ index 4c0002b..403c63f 100644
  #define PCI_DEVICE_ID_INTEL_82599_SFP_VF 0x10ed
  
 -#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x29c0
-+//#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x29c0
-+// COUGAR POINT
-+#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x0100
++//#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x29c0 /* Q35 QEMU */
++//#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x0100 /* Q67 COUGAR POINT */
++#define PCI_DEVICE_ID_INTEL_Q35_MCH      0x0c00 /* HASWELL */
  
  #define PCI_VENDOR_ID_XEN                0x5853
  #define PCI_DEVICE_ID_XEN_PLATFORM       0x0001
