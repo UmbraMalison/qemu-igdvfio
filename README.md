@@ -39,15 +39,15 @@ qemu/include/hw/pci/pci_ids.h
 
 qemu/hw/isa/lpc_ich9.c
 
-    k->vendor_id = PCI_VENDOR_ID_INTEL;
-    k->device_id = PCI_DEVICE_ID_INTEL_ICH9_8;
-    k->revision = ICH9_A2_LPC_REVISION;
+    k->vendor_id = host_pci_read_config(0,0x1f,0,0x00,2);
+    k->device_id = host_pci_read_config(0,0x1f,0,0x02,2);
+    k->revision = host_pci_read_config(0,0x1f,0,0x08,1);
 
 qemu/hw/pci-host/q35.c
 
-    k->vendor_id = PCI_VENDOR_ID_INTEL;
-    k->device_id = PCI_DEVICE_ID_INTEL_Q35_MCH;
-    k->revision = MCH_HOST_BRIDGE_REVISION_DEFAULT;
+    k->vendor_id = host_pci_read_config(0,0,0,0x00,2);
+    k->device_id = host_pci_read_config(0,0,0,0x02,2);
+    k->device_id = host_pci_read_config(0,0,0,0x02,2);
 
 seabios/src/fw/dev-q35.h
 
