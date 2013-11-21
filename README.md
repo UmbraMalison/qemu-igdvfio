@@ -91,6 +91,11 @@ seabios/src/fw/dev-q35.h
 
 [How to dump the video bios](https://01.org/linuxgraphics/documentation/how-dump-video-bios-0 "Video Bios")
 
+Alternative
+
+    dd if=/dev/mem of=vbios.dump bs=64k skip=12 count=1
+
+
 STATUS
 ======
 Intelfb appears to be working. Software rendering appears to be working.
