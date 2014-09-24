@@ -1,0 +1,259 @@
+diff --git a/src/fw/dev-q35.h b/src/fw/dev-q35.h
+index 6ae039f..dac8799 100644
+--- a/src/fw/dev-q35.h
++++ b/src/fw/dev-q35.h
+@@ -14,7 +14,18 @@
+ #define Q35_HOST_PCIE_START_BUS_NUMBER  0
+ #define Q35_HOST_PCIE_END_BUS_NUMBER    255
+ 
+-#define PCI_DEVICE_ID_INTEL_ICH9_LPC    0x2918
++/* TODO: Replace this hack for a non-hack!
++ * PCI_DEVICE_ID_INTEL_ICH9_LPC must be set to
++ * `setpci -s 00:1f.0 0x02.w` (LPC device id) 
++ * of the host - so that seabios recognises
++ * the hardware QEMU is providing, 
++ * which now includes the hosts LPC */
++#define Q35_BEARLAKE			0x2918 // QEMU DEFAULT
++#define Q35_COUGARPOINT			0x1c4e
++#define Q35_PANTHERPOINT		0x
++#define Q35_LYNXPOINT			0x8c4e
++
++#define PCI_DEVICE_ID_INTEL_ICH9_LPC    Q35_COUGARPOINT
+ #define ICH9_LPC_PMBASE                 0x40
+ #define ICH9_LPC_PMBASE_RTE             0x1
+ 
+diff --git a/src/fw/pciinit.c b/src/fw/pciinit.c
+index 0e5d51b..bcd519b 100644
+--- a/src/fw/pciinit.c
++++ b/src/fw/pciinit.c
+@@ -389,20 +389,111 @@ static void i440fx_mem_addr_setup(struct pci_device *dev, void *arg)
+ 
+ static void mch_mem_addr_setup(struct pci_device *dev, void *arg)
+ {
+-    u64 addr = Q35_HOST_BRIDGE_PCIEXBAR_ADDR;
+-    u32 size = Q35_HOST_BRIDGE_PCIEXBAR_SIZE;
++    /* Base addresses are either calculated by their location with respect to
++     * TOM as described by Intel documentation.
++     * Or they are allocated using malloc. In either case, the new base addresses
++     * are written to pci_config space, where by qemu(q35) and vfio catch these changes
++     * and respond accordingly.
++     * The intention is to mimic the hosts BIOS role in configuring the PCI_CONFIG space.
++     * TODO: Clearly, this is not complete 
++     * - as complete Direct Assignment is not completly working.*/
++
++    /* TODO: Move these defines to be consistent with seabios */
++    #define Q35_TOM                 0xa0
++    #define Q35_TOM_BASEADDR        0x7FFFF00000
++    #define Q35_TOUUD               0xa8
++    #define Q35_TOUUD_BASEADDR      0x7FFFF00000
++    #define Q35_TOLUD               0xbc
++    #define Q35_TOLUD_BASEADDR      0xFFF00000
++    #define Q35_APIC_FLASH_TXT_SIZE 20 * 1024 * 1024
++    #define Q35_PCIEXBAR_SIZE       256 * 1024 * 1024
++    #define Q35_IDK_SIZE            768 * 1024 * 1024
++    #define Q35_PCIEXBAR_BASEADDR   0x7FF0000000
++    #define Q35_BDSM                0xb0
++    #define Q35_BDSM_BASEADDR       0xFFF00000
++    #define Q35_GMCH_DSM_MASK       0xF8
++    #define Q35_BGSM                0xb4
++    #define Q35_BGSM_BASEADDR       0xFFF00000
++    #define Q35_GMCH_GSM_MASK       0x300
++    #define Q35_TSEG                0xb8
++    #define Q35_TSEG_BASEADDR       0xFFF00000
++    #define TSEG_SIZE               8 * 1024 * 1024
++    #define Q35_MCHBAR              0x48
++    #define Q35_MCHBAR_BASEADDR     0x7FFFFF8000
++    #define Q35_MCHBAR_EN           0x1
++    #define Q35_MCHBAR_SIZE         0x8000
++    #define Q35_DMIBAR              0x68
++    #define Q35_DMIBAR_BASEADDR     0x7FFFFFF000
++    #define Q35_DMIBAR_EN           0x1
++    #define Q35_DMIBAR_SIZE         0x1000
++    #define IGD_OPREGION            0xfc
++    #define IGD_OPREGION_PAGES      3
++    #define IGD_OPREGION_SIZE       IGD_OPREGION_PAGES * PAGE_SIZE
++    #define IGD_BDSM            0x5c
++    #define Q35_GDSM            0x52
++
++    u16 q35bdf = dev->bdf;
++
++    /* setup TOM - Top Of Memory */
++    u32 tom_lower, tom_upper;
++    u64 tom, touud;
++
++    if (RamSizeOver4G)
++    {
++	/* TODO: not finished. +4GB no supported */
++        tom = (0x100000000 + RamSizeOver4G) & Q35_TOM_BASEADDR;
++        touud = tom & Q35_TOUUD_BASEADDR; // minus all Intel ME stolen memory if reclaim/remap is disabled
++        dprintf(1, "Q35: RamSizeOver4G: %016llX\n", tom);
++    }
++    else
++    {
++        tom = RamSize & Q35_TOM_BASEADDR;
++        touud = 0x0; // disabled if RamSize is under 4G
++        dprintf(1, "Q35: RamSize: %x\n", RamSize);
++    }
+ 
+-    /* setup mmconfig */
+-    u16 bdf = dev->bdf;
+-    u32 upper = addr >> 32;
+-    u32 lower = (addr & 0xffffffff) | Q35_HOST_BRIDGE_PCIEXBAREN;
+-    pci_config_writel(bdf, Q35_HOST_BRIDGE_PCIEXBAR, 0);
+-    pci_config_writel(bdf, Q35_HOST_BRIDGE_PCIEXBAR + 4, upper);
+-    pci_config_writel(bdf, Q35_HOST_BRIDGE_PCIEXBAR, lower);
+-    add_e820(addr, size, E820_RESERVED);
++    tom_lower = (tom & 0xffffffff);
++    tom_upper = tom >> 32;
++    pci_config_writel(q35bdf,
++                      Q35_TOM,
++                      tom_lower);
++    pci_config_writel(q35bdf,
++                      Q35_TOM+0x4,
++                      tom_upper);
++
++    /* setup TOUUD - Top of Upper Usable DRAM */
++    u32 touud_lower, touud_upper;
++    touud_lower = (touud & 0xffffffff);
++    touud_upper = touud >> 32;
++    pci_config_writel(q35bdf,
++                      Q35_TOUUD,
++                      touud_lower);
++    pci_config_writel(q35bdf,
++                      Q35_TOUUD+0x4,
++                      touud_upper);
++
++    /* setup TOLUD - Top of Lower Usable DRAM */
++    u32 tolud;
++
++    tolud = (tom - Q35_APIC_FLASH_TXT_SIZE) & Q35_TOLUD_BASEADDR;
++    pci_config_writel(q35bdf,
++                      Q35_TOLUD,
++                      tolud);
++
++
++    /* setup PCIEXBAR/MMCONFIG */
++    u64 pciexbar;
++    pciexbar = Q35_HOST_BRIDGE_PCIEXBAR_ADDR;
++
++    u32 upper = pciexbar >> 32;
++    u32 lower = (pciexbar & 0xffffffff) | Q35_HOST_BRIDGE_PCIEXBAREN;
++    pci_config_writel(q35bdf, Q35_HOST_BRIDGE_PCIEXBAR, 0); // This sets bit 2:1 0x0 == 256 MB (PCIEXBAR_SIZE)
++    pci_config_writel(q35bdf, Q35_HOST_BRIDGE_PCIEXBAR + 4, upper);
++    pci_config_writel(q35bdf, Q35_HOST_BRIDGE_PCIEXBAR, lower);
++    add_e820(pciexbar, Q35_PCIEXBAR_SIZE, E820_RESERVED);
+ 
+     /* setup pci i/o window (above mmconfig) */
+-    pcimem_start = addr + size;
++    pcimem_start = pciexbar + Q35_PCIEXBAR_SIZE;
+ 
+     pci_slot_get_irq = mch_pci_slot_get_irq;
+ 
+@@ -411,6 +502,107 @@ static void mch_mem_addr_setup(struct pci_device *dev, void *arg)
+         pci_io_low_end = 0x10000;
+     else
+         pci_io_low_end = acpi_pm_base;
++
++    /* setup BDSM - Base Data of Stolen Memory */
++    u16 gmch_config = pci_config_readw(q35bdf,0x50);
++
++    int dsm_size;
++    u16 gmch_dsm = (gmch_config & Q35_GMCH_DSM_MASK) >> 3;
++
++    switch (gmch_dsm)
++    {
++      case 0x0: dsm_size = 0; break;
++      case 0x1: dsm_size = 32; break;
++      case 0x2: dsm_size = 64; break;
++      case 0x3: dsm_size = 96; break;
++      case 0x4: dsm_size = 128; break;
++      case 0x5: dsm_size = 160; break;
++      case 0x6: dsm_size = 192; break;
++      case 0x7: dsm_size = 224; break;
++      case 0x8: dsm_size = 256; break;
++      case 0x9: dsm_size = 288; break;
++      case 0xa: dsm_size = 320; break;
++      case 0xb: dsm_size = 352; break;
++      case 0xc: dsm_size = 384; break;
++      case 0xd: dsm_size = 416; break;
++      case 0xe: dsm_size = 448; break;
++      case 0xf: dsm_size = 480; break;
++      case 0x10: dsm_size = 512; break;
++     // default: /* panic */
++    }
++
++    dsm_size = dsm_size * 1024 * 1024;
++
++    u32 bdsm = (tolud - dsm_size) & Q35_BDSM_BASEADDR;
++    pci_config_writel(q35bdf,Q35_BDSM,bdsm);
++    add_e820(bdsm, dsm_size, E820_RESERVED);
++
++    /* setup BGSM - Base Data of GTT Stolen Memory */
++    int gsm_size;
++    u16 gmch_gsm = (gmch_config & Q35_GMCH_GSM_MASK) >> 8;
++
++    switch (gmch_gsm)
++    {
++      case 0x2: gsm_size = 2; break;
++      case 0x1: gsm_size = 1; break;
++      case 0x0: gsm_size = 0; break;
++     // default: /* panic */
++    }
++
++    gsm_size = gsm_size * 1024 * 1024;
++
++    u32 bgsm = (tolud - dsm_size - gsm_size) & Q35_BGSM_BASEADDR;
++    pci_config_writel(q35bdf,Q35_BGSM,bgsm);
++    add_e820(bgsm, gsm_size, E820_RESERVED);
++
++    /* setup TSEG -  */
++    u32 tseg = (tolud - dsm_size - gsm_size - TSEG_SIZE) & Q35_TSEG_BASEADDR;
++    pci_config_writel(q35bdf,Q35_TSEG,tseg);
++    add_e820(tseg, TSEG_SIZE, E820_RESERVED);
++
++    /* setup MCHBAR */
++    u32 mchbar_addr, mchbar_lower, mchbar_upper;
++    u64 mchbar;
++
++    mchbar_addr = malloc_high(Q35_MCHBAR_SIZE);
++    mchbar = (mchbar_addr & Q35_MCHBAR_BASEADDR) | Q35_MCHBAR_EN;
++    mchbar_lower = (mchbar & 0xffffffff);
++    mchbar_upper = mchbar >> 32;
++
++    add_e820(mchbar_addr,Q35_MCHBAR_SIZE,E820_RESERVED);
++    pci_config_writel(pci_to_bdf(0,0,0),
++                      Q35_MCHBAR,
++                      mchbar_lower);
++    pci_config_writel(pci_to_bdf(0,0,0),
++                      Q35_MCHBAR+0x4,
++                      mchbar_upper);
++
++    /* setup DMIBAR */
++    u32 dmibar_addr, dmibar_lower, dmibar_upper;
++    u64 dmibar;
++
++    dmibar_addr = malloc_high(Q35_DMIBAR_SIZE);
++    dmibar = (dmibar_addr & Q35_DMIBAR_BASEADDR) | Q35_DMIBAR_EN;
++    dmibar_lower = (dmibar & 0xffffffff);
++    dmibar_upper = dmibar >> 32;
++
++    add_e820(dmibar_addr,Q35_DMIBAR_SIZE,E820_RESERVED);
++    pci_config_writel(pci_to_bdf(0,0,0),
++                      Q35_DMIBAR,
++                      dmibar_lower);
++    pci_config_writel(pci_to_bdf(0,0,0),
++                      Q35_DMIBAR+0x4,
++                      dmibar_upper);
++
++    /* setup igd opregion */
++    u32 host_opregion = pci_config_readl(pci_to_bdf(0,2,0),IGD_OPREGION);
++    u32 guest_opregion = malloc_high(IGD_OPREGION_SIZE);
++
++    add_e820(guest_opregion,IGD_OPREGION_SIZE,E820_NVS);
++    pci_config_writel(pci_to_bdf(0,2,0),
++                      IGD_OPREGION,
++                      ((guest_opregion & 0xfffff000) | (host_opregion & 0xfff)));
++
+ }
+ 
+ static const struct pci_device_id pci_platform_tbl[] = {

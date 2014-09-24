@@ -1,0 +1,1195 @@
+diff --git a/hw/i386/pc.c b/hw/i386/pc.c
+index 97932a6..18c72d2 100644
+--- a/hw/i386/pc.c
++++ b/hw/i386/pc.c
+@@ -617,6 +617,9 @@ int e820_add_entry(uint64_t address, uint64_t length, uint32_t type)
+     e820_table[e820_entries].type = cpu_to_le32(type);
+     e820_entries++;
+ 
++    fw_cfg_update_file(fw_cfg_find(), "etc/e820", e820_table,
++                      sizeof(struct e820_entry) * e820_entries);
++
+     return e820_entries;
+ }
+ 
+diff --git a/hw/isa/lpc_ich9.c b/hw/isa/lpc_ich9.c
+index b846d81..e6a7fbd 100644
+--- a/hw/isa/lpc_ich9.c
++++ b/hw/isa/lpc_ich9.c
+@@ -6,6 +6,7 @@
+  *               Isaku Yamahata <yamahata at valinux co jp>
+  *               VA Linux Systems Japan K.K.
+  * Copyright (C) 2012 Jason Baron <jbaron@redhat.com>
++ * Copyright (C) 2014 Andrew Barnes <andy@outsideglobe.com> IGD Support
+  *
+  * This is based on piix_pci.c, but heavily modified.
+  *
+@@ -46,6 +47,16 @@
+ #include "exec/address-spaces.h"
+ #include "sysemu/sysemu.h"
+ 
++/* #define DEBUG_LPC */
++#ifdef DEBUG_LPC
++#  define LPC_DPRINTF(format, ...) print("LPC: " format, ## __VA_ARGS__)
++#else
++#  define LPC_DPRINTF(format, ...) do {} while (0)
++#endif
++
++/* For intel-spec conforming config */
++#define CORRECT_CONFIG
++
+ static int ich9_lpc_sci_irq(ICH9LPCState *lpc);
+ 
+ /*****************************************************************************/
+@@ -53,6 +64,10 @@ static int ich9_lpc_sci_irq(ICH9LPCState *lpc);
+ 
+ static void ich9_lpc_reset(DeviceState *qdev);
+ 
++/* BEWARE: only set this if you are passing IGD through to guest */
++/* TODO: detect IGD automatically */
++static bool IGD_PASSTHROUGH = true;
++
+ /* chipset configuration register
+  * to access chipset configuration registers, pci_[sg]et_{byte, word, long}
+  * are used.
+@@ -425,6 +440,9 @@ static void ich9_lpc_config_write(PCIDevice *d,
+     ICH9LPCState *lpc = ICH9_LPC_DEVICE(d);
+     uint32_t rbca_old = pci_get_long(d->config + ICH9_LPC_RCBA);
+ 
++    LPC_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
++                0000, 00, PCI_SLOT(d->devfn),PCI_FUNC(d->devfn), addr, val, len);
++
+     pci_default_write_config(d, addr, val, len);
+     if (ranges_overlap(addr, len, ICH9_LPC_PMBASE, 4)) {
+         ich9_lpc_pmbase_update(lpc);
+@@ -440,6 +458,34 @@ static void ich9_lpc_config_write(PCIDevice *d,
+     }
+ }
+ 
++static uint32_t ich9_lpc_config_read(PCIDevice *d,
++                                     uint32_t addr, int len)
++{
++    uint32_t val;
++    if (IGD_PASSTHROUGH)
++    {
++	if (ranges_overlap(addr, len, 0x2c, 2) || /* SVID - Subsystem Vendor Identification */
++	    ranges_overlap(addr, len, 0x2e, 2))   /* SID - Subsystem Identificaion */
++	{
++		val = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),addr,len);
++	}
++	else
++	{
++		goto defaultread;
++	}
++    }
++    else
++    {
++defaultread:
++	val = pci_default_read_config(d,addr,len);
++    }
++
++    LPC_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
++                0000, 00, PCI_SLOT(d->devfn),PCI_FUNC(d->devfn), addr, len, val);
++
++    return val;
++}
++
+ static void ich9_lpc_reset(DeviceState *qdev)
+ {
+     PCIDevice *d = PCI_DEVICE(qdev);
+@@ -577,6 +623,13 @@ static int ich9_lpc_init(PCIDevice *d)
+ 
+     isa_bus = isa_bus_new(&d->qdev, get_system_io());
+ 
++    #ifdef CORRECT_CONFIG
++        pci_set_word(d->wmask + PCI_COMMAND,
++                    (PCI_COMMAND_SERR | PCI_COMMAND_PARITY));
++        pci_set_word(d->config + PCI_COMMAND,
++                    (PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER));
++    #endif
++
+     pci_set_long(d->wmask + ICH9_LPC_PMBASE,
+                  ICH9_LPC_PMBASE_BASE_ADDRESS_MASK);
+ 
+@@ -665,11 +718,20 @@ static void ich9_lpc_class_init(ObjectClass *klass, void *data)
+     k->init = ich9_lpc_init;
+     dc->vmsd = &vmstate_ich9_lpc;
+     k->config_write = ich9_lpc_config_write;
++    k->config_read = ich9_lpc_config_read;
+     dc->desc = "ICH9 LPC bridge";
+     k->vendor_id = PCI_VENDOR_ID_INTEL;
+     k->device_id = PCI_DEVICE_ID_INTEL_ICH9_8;
+     k->revision = ICH9_A2_LPC_REVISION;
+     k->class_id = PCI_CLASS_BRIDGE_ISA;
++
++    /* For a UN-MODIFIED guest, the following 3 registers need to be read from the host.
++     * alternatively, modify i915_drv.c, intel_detect_pch, add a check for
++     * PCI_DEVICE_ID_INTEL_ICH9_8 and copy the settings from the PCH you desire */
++    k->vendor_id = host_pci_read_config(0,0x1f,0,0x00,2);
++    k->device_id = host_pci_read_config(0,0x1f,0,0x02,2);
++//    k->revision = host_pci_read_config(0,0x1f,0,0x08,1);
++
+     /*
+      * Reason: part of ICH9 southbridge, needs to be wired up by
+      * pc_q35_init()
+diff --git a/hw/misc/vfio.c b/hw/misc/vfio.c
+index e88b610..54e549b 100644
+--- a/hw/misc/vfio.c
++++ b/hw/misc/vfio.c
+@@ -5,6 +5,7 @@
+  *
+  * Authors:
+  *  Alex Williamson <alex.williamson@redhat.com>
++ *  Andrew Barnes <andy@outsideglobe.com> IGD Support
+  *
+  * This work is licensed under the terms of the GNU GPL, version 2.  See
+  * the COPYING file in the top-level directory.
+@@ -56,6 +57,45 @@
+ #define VFIO_ALLOW_KVM_MSI 1
+ #define VFIO_ALLOW_KVM_MSIX 1
+ 
++/* A handy list of IGD device ID's */
++#define IS_IGD_HASWELL(id)            (id == 0x0402 \
++                                        || id == 0x0406 \
++                                        || id == 0x040a \
++                                        || id == 0x0412 \
++                                        || id == 0x0416 \
++                                        || id == 0x041a \
++                                        || id == 0x0a04 \
++                                        || id == 0x0a16 \
++                                        || id == 0x0a22 \
++                                        || id == 0x0a26 \
++                                        || id == 0x0a2a )
++#define IS_IGD_IVYBRIDGE(id)          (id == 0x0162 \
++                                        || id == 0x0166 \
++                                        || id == 0x016a \
++                                        || id == 0x0152 \
++                                        || id == 0x0156 \
++                                        || id == 0x015a )
++#define IS_IGD_SANDYBRIDGE(id)        (id == 0x0102 \
++                                        || id == 0x0106 \
++                                        || id == 0x0112 \
++                                        || id == 0x0116 \
++                                        || id == 0x0122 \
++                                        || id == 0x0126 \
++                                        || id ==0x010a )
++#define IS_IGD_IRONLAKE_CLARKDALE(id) (id == 0x0042 )
++#define IS_IGD_IRONLAKE_ARRANDALE(id) (id == 0x0046 )
++#define IS_IGD(id)                    (IS_IGD_IRONLAKE_CLARKDALE(id) \
++                                        || IS_IGD_IRONLAKE_ARRANDALE(id) \
++                                        || IS_IGD_SANDYBRIDGE(id) \
++                                        || IS_IGD_IVYBRIDGE(id) \
++                                        || IS_IGD_HASWELL(id) )
++#define IGD_BAR_MASK                  0xFFFFFFFFFFFF0000
++#define DMAR_OPERATION_TIMEOUT        ((s_time_t)((_ms) * 1000000ULL))
++
++#define PCI_CONFIG_INTEL_OPREGION       0xfc
++#define INTEL_OPREGION_PAGES            3
++#define INTEL_OPREGION_SIZE             INTEL_OPREGION_PAGES * TARGET_PAGE_SIZE
++
+ struct VFIODevice;
+ 
+ typedef struct VFIOQuirk {
+@@ -227,6 +267,8 @@ typedef struct VFIODevice {
+     bool has_pm_reset;
+     bool needs_reset;
+     bool rom_read_failed;
++    MemoryRegion opregion; /* Intel opregion */
++    uint32_t host_opregion; /* Host address of opregion */
+ } VFIODevice;
+ 
+ typedef struct VFIOGroup {
+@@ -283,6 +325,18 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
+                                   uint32_t val, int len);
+ static void vfio_mmap_set_enabled(VFIODevice *vdev, bool enabled);
+ 
++static void vfio_set_word_bits(uint8_t *buf, uint16_t val, uint16_t mask);
++static void vfio_add_emulated_word(VFIODevice *vdev, int pos,
++                                   uint16_t val, uint16_t mask);
++static void vfio_set_long_bits(uint8_t *buf, uint32_t val, uint32_t mask);
++static void vfio_add_emulated_long(VFIODevice *vdev, int pos,
++                                   uint32_t val, uint32_t mask);
++static void vfio_add_emulated_rw_long(VFIODevice *vdev, int pos,
++                                   uint32_t val, uint32_t mask);
++static void vfio_map_igdopregion(VFIODevice *vdev, uint32_t guest_opregion);
++
++static VFIODevice *igdvfio;
++
+ /*
+  * Common VFIO interrupt disable
+  */
+@@ -2324,27 +2378,46 @@ static uint32_t vfio_pci_read_config(PCIDevice *pdev, uint32_t addr, int len)
+     VFIODevice *vdev = DO_UPCAST(VFIODevice, pdev, pdev);
+     uint32_t emu_bits = 0, emu_val = 0, phys_val = 0, val;
+ 
+-    memcpy(&emu_bits, vdev->emulated_config_bits + addr, len);
+-    emu_bits = le32_to_cpu(emu_bits);
+-
+-    if (emu_bits) {
+-        emu_val = pci_default_read_config(pdev, addr, len);
++    /* BDSM mirror - BDSM can be read at either 0xb0 device 0, or 0x5c device 2.
++     * Redirect this mirror from host 0xb0 device 0 to guest 0xb0 device 0.*/
++    if (IS_IGD(pci_get_word(pdev->config + PCI_DEVICE_ID)) && ranges_overlap(addr,len,0x5c,4))
++    {
++        DPRINTF("%s Read Trapped (%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
++                    vdev->host.domain, vdev->host.bus, vdev->host.slot,
++                                vdev->host.function, addr, val, len);
++        PCIBus *root = pci_find_primary_bus();
++        PCIDevice *q35 = pci_find_device(root,0,PCI_DEVFN(0, 0));
++        val = pci_default_read_config(q35, 0xb0, len);
+     }
+ 
+-    if (~emu_bits & (0xffffffffU >> (32 - len * 8))) {
+-        ssize_t ret;
++    else
++    {
++        memcpy(&emu_bits, vdev->emulated_config_bits + addr, len);
++        emu_bits = le32_to_cpu(emu_bits);
++
++        if (emu_bits) {
++            emu_val = pci_default_read_config(pdev, addr, len);
++            DPRINTF("%s emulated read: %x \n",__func__,emu_val);
+ 
+-        ret = pread(vdev->fd, &phys_val, len, vdev->config_offset + addr);
+-        if (ret != len) {
+-            error_report("%s(%04x:%02x:%02x.%x, 0x%x, 0x%x) failed: %m",
+-                         __func__, vdev->host.domain, vdev->host.bus,
+-                         vdev->host.slot, vdev->host.function, addr, len);
+-            return -errno;
+         }
+-        phys_val = le32_to_cpu(phys_val);
+-    }
+ 
+-    val = (emu_val & emu_bits) | (phys_val & ~emu_bits);
++        if (~emu_bits & (0xffffffffU >> (32 - len * 8))) {
++            ssize_t ret;
++
++            ret = pread(vdev->fd, &phys_val, len, vdev->config_offset + addr);
++            if (ret != len) {
++                error_report("%s(%04x:%02x:%02x.%x, 0x%x, 0x%x) failed: %m",
++                             __func__, vdev->host.domain, vdev->host.bus,
++                             vdev->host.slot, vdev->host.function, addr, len);
++                return -errno;
++            }
++            phys_val = le32_to_cpu(phys_val);
++            DPRINTF("%s direct read: %x \n",__func__,phys_val);
++
++        }
++
++        val = (emu_val & emu_bits) | (phys_val & ~emu_bits);
++    }
+ 
+     DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
+             vdev->host.domain, vdev->host.bus, vdev->host.slot,
+@@ -2363,12 +2436,30 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
+             vdev->host.domain, vdev->host.bus, vdev->host.slot,
+             vdev->host.function, addr, val, len);
+ 
++    /* A write to OPREGION base address means that seabios has allocated a new memory region for OPREGION
++     * in the guest. */
++    if (IS_IGD(pci_get_word(pdev->config + PCI_DEVICE_ID)) && ranges_overlap(addr,len,PCI_CONFIG_INTEL_OPREGION,4))
++    {
++        DPRINTF("%s Write Trapped (%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
++                    vdev->host.domain, vdev->host.bus, vdev->host.slot,
++                                vdev->host.function, addr, val, len);
++        //val = (val & 0xfffff000) | (vdev->host_opregion & 0xfff);
++        vfio_map_igdopregion(vdev,val);
++        goto defaultwrite;
++    }
++
+     /* Write everything to VFIO, let it filter out what we can't write */
+-    if (pwrite(vdev->fd, &val_le, len, vdev->config_offset + addr) != len) {
++    else if (pwrite(vdev->fd, &val_le, len, vdev->config_offset + addr) != len) {
+         error_report("%s(%04x:%02x:%02x.%x, 0x%x, 0x%x, 0x%x) failed: %m",
+                      __func__, vdev->host.domain, vdev->host.bus,
+                      vdev->host.slot, vdev->host.function, addr, val, len);
+     }
++    else
++    {
++        DPRINTF("%s Written to VFIO (%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
++                  vdev->host.domain, vdev->host.bus, vdev->host.slot,
++                              vdev->host.function, addr, val, len);
++    }
+ 
+     /* MSI/MSI-X Enabling/Disabling */
+     if (pdev->cap_present & QEMU_PCI_CAP_MSI &&
+@@ -2405,7 +2496,11 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
+         }
+     } else {
+         /* Write everything to QEMU to keep emulated bits correct */
+-        pci_default_write_config(pdev, addr, val, len);
++defaultwrite:
++       pci_default_write_config(pdev, addr, val, len);
++       DPRINTF("%s Default Write (%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
++                   vdev->host.domain, vdev->host.bus, vdev->host.slot,
++                               vdev->host.function, addr, val, len);
+     }
+ }
+ 
+@@ -3065,7 +3160,7 @@ static void vfio_set_word_bits(uint8_t *buf, uint16_t val, uint16_t mask)
+ {
+     pci_set_word(buf, (pci_get_word(buf) & ~mask) | val);
+ }
+-
++/* helper functions make read-only emulated registers! */
+ static void vfio_add_emulated_word(VFIODevice *vdev, int pos,
+                                    uint16_t val, uint16_t mask)
+ {
+@@ -3087,6 +3182,62 @@ static void vfio_add_emulated_long(VFIODevice *vdev, int pos,
+     vfio_set_long_bits(vdev->emulated_config_bits + pos, mask, mask);
+ }
+ 
++static void vfio_add_emulated_rw_long(VFIODevice *vdev, int pos,
++                                   uint32_t val, uint32_t mask)
++{
++    vfio_set_long_bits(vdev->pdev.config + pos, val, mask);
++    vfio_set_long_bits(vdev->pdev.wmask + pos, mask, mask);
++    vfio_set_long_bits(vdev->emulated_config_bits + pos, mask, mask);
++}
++
++/* Setup the mapping of the opregion ready for Seabios to allocate the guest location */
++static void vfio_setup_igdopregion(VFIODevice *vdev)
++{
++    PCIDevice *pdev = &vdev->pdev;
++    int fd;
++    char name[64];
++    void *map;
++
++    vdev->host_opregion = vfio_pci_read_config(pdev,PCI_CONFIG_INTEL_OPREGION,4);
++
++    DPRINTF("%s Setup IGD OpRegion: %x\n",__func__,vdev->host_opregion);
++
++    snprintf(name, sizeof(name), "VFIO %04x:%02x:%02x.%x IGDOPREGION mmap",
++             vdev->host.domain, vdev->host.bus, vdev->host.slot,
++             vdev->host.function);
++
++    fd = open("/dev/mem", O_RDWR);
++    map = mmap(NULL,INTEL_OPREGION_SIZE,PROT_READ|PROT_WRITE,MAP_SHARED,fd,(vdev->host_opregion & ~0xfff));
++    if (map == MAP_FAILED)
++    {
++        map = NULL;
++        DPRINTF("%s Map IGD OpRegion: MAP_FAILED\n",__func__);
++    }
++    memory_region_init_ram_ptr(&vdev->opregion, OBJECT(vdev), name, INTEL_OPREGION_SIZE, map);
++}
++
++/* Seabios allocates the guest location for the opregion. This function then memmory maps
++ * host memory at that guest location */
++static void vfio_map_igdopregion(VFIODevice *vdev, uint32_t new_opregion)
++{
++    PCIDevice *pdev = &vdev->pdev;
++    MemoryRegion *guest_memory = get_system_memory();
++    uint32_t current_opregion = vfio_pci_read_config(pdev,PCI_CONFIG_INTEL_OPREGION,4);
++
++    if ( current_opregion != vdev->host_opregion )
++    {
++        // remap
++        DPRINTF("%s Delete IGD OpRegion: %x\n",__func__,(current_opregion & ~0xfff));
++        memory_region_del_subregion(guest_memory, &vdev->opregion);
++    }
++
++    DPRINTF("%s Map IGD OpRegion: %x -> %x\n",__func__,vdev->host_opregion,new_opregion);
++    memory_region_add_subregion(guest_memory, (new_opregion & ~0xfff), &vdev->opregion);
++
++    DPRINTF("%s Adding 0xfc to emulated bits\n", __func__);
++    vfio_add_emulated_rw_long(vdev, PCI_CONFIG_INTEL_OPREGION, new_opregion, 0xffffffff);
++}
++
+ static int vfio_setup_pcie_cap(VFIODevice *vdev, int pos, uint8_t size)
+ {
+     uint16_t flags;
+@@ -4028,7 +4179,8 @@ static int vfio_get_device(VFIOGroup *group, const char *name, VFIODevice *vdev)
+     ret = ioctl(vdev->fd, VFIO_DEVICE_GET_IRQ_INFO, &irq_info);
+     if (ret) {
+         /* This can fail for an old kernel or legacy PCI dev */
+-        DPRINTF("VFIO_DEVICE_GET_IRQ_INFO failure: %m\n");
++        //DPRINTF("VFIO_DEVICE_GET_IRQ_INFO failure: %m\n");
++        DPRINTF("VFIO_DEVICE_GET_IRQ_INFO failure ret=%d\n", ret);
+         ret = 0;
+     } else if (irq_info.count == 1) {
+         vdev->pci_aer = true;
+@@ -4253,6 +4405,11 @@ static int vfio_initfn(PCIDevice *pdev)
+     vdev->emulated_config_bits[PCI_HEADER_TYPE] =
+                                               PCI_HEADER_TYPE_MULTI_FUNCTION;
+ 
++    if (IS_IGD(pci_get_word(pdev->config + PCI_DEVICE_ID)))
++    {
++        vfio_setup_igdopregion(vdev);
++    }
++
+     /* Restore or clear multifunction, this is always controlled by QEMU */
+     if (vdev->pdev.cap_present & QEMU_PCI_CAP_MULTIFUNCTION) {
+         vdev->pdev.config[PCI_HEADER_TYPE] |= PCI_HEADER_TYPE_MULTI_FUNCTION;
+diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
+index b71d251..514faba 100644
+--- a/hw/nvram/fw_cfg.c
++++ b/hw/nvram/fw_cfg.c
+@@ -493,6 +493,28 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+     s->files->count = cpu_to_be32(index+1);
+ }
+ 
++void fw_cfg_update_file(FWCfgState *s, const char *filename,
++                       void *data, size_t len)
++{
++    int i;
++
++    if (!s || !s->files) {
++        return;
++    }
++
++    for (i = 0; i < be32_to_cpu(s->files->count); i++) {
++        if (strcmp(s->files->f[i].name, filename)) {
++            continue;
++        }
++
++        assert(i < FW_CFG_FILE_SLOTS);
++        s->files->f[i].size = cpu_to_be32(len);
++        fw_cfg_add_bytes_read_callback(s, FW_CFG_FILE_FIRST + i,
++                                       NULL, NULL, data, len);
++        return;
++    }
++}
++
+ void fw_cfg_add_file(FWCfgState *s,  const char *filename,
+                      void *data, size_t len)
+ {
+diff --git a/hw/pci-host/q35.c b/hw/pci-host/q35.c
+index a0a3068..05348ac 100644
+--- a/hw/pci-host/q35.c
++++ b/hw/pci-host/q35.c
+@@ -6,6 +6,7 @@
+  *               Isaku Yamahata <yamahata at valinux co jp>
+  *               VA Linux Systems Japan K.K.
+  * Copyright (C) 2012 Jason Baron <jbaron@redhat.com>
++ *               2014 Andrew barnes <andy@outsideglobe.com> IGD Support
+  *
+  * This is based on piix_pci.c, but heavily modified.
+  *
+@@ -30,11 +31,26 @@
+ #include "hw/hw.h"
+ #include "hw/pci-host/q35.h"
+ #include "qapi/visitor.h"
++#include "hw/pci/pci.h"
++#include <sys/mman.h> /* memory map functions */
++
++/* #define DEBUG_Q35 */
++#ifdef DEBUG_Q35
++# define Q35_DPRINTF(format, ...)       printf("Q35: " format, ## __VA_ARGS__)
++#else
++# define Q35_DPRINTF(format, ...)       do { } while (0)
++#endif
++
++/* for intel-spec conforming config */
++/* #define CORRECT_CONFIG */
+ 
+ /****************************************************************************
+  * Q35 host
+  */
+ 
++/* BEWARE: only set this if you are passing IGD through */
++static bool IGD_PASSTHROUGH = true;
++
+ static void q35_host_realize(DeviceState *dev, Error **errp)
+ {
+     PCIHostState *pci = PCI_HOST_BRIDGE(dev);
+@@ -284,11 +300,193 @@ static void mch_set_smm(int smm, void *arg)
+     memory_region_transaction_commit();
+ }
+ 
+-static void mch_write_config(PCIDevice *d,
++/* TODO: Move these variables/defines to be consistent with Q35 coding style */
++MemoryRegion bdsm;
++uint32_t bdsm_host;
++MemoryRegion bgsm;
++uint32_t bgsm_host;
++MemoryRegion tseg;
++uint32_t tseg_host;
++#define MCH_CONFIG_BDSM 0xb0
++#define MCH_CONFIG_BGSM 0xb4
++#define MCH_CONFIG_TSEG 0xb8
++#define MCH_CONFIG_GMCH 0x50
++
++/* Setup memory map for Stolen Memory */
++static void mch_setup_bdsm(PCIDevice *d)
++{
++    int fd;
++    char name[64];
++    void *map;
++    bdsm_host = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),MCH_CONFIG_BDSM,4);
++    int dsm_size;
++    uint16_t gmch_host = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),MCH_CONFIG_GMCH,2);
++    uint16_t gmch_dsm = (gmch_host & 0xF8) >> 3;
++    MCHPCIState *mch = MCH_PCI_DEVICE(d);
++
++    Q35_DPRINTF("%s Setup BDSM: %x\n",__func__,bdsm_host);
++
++    snprintf(name, sizeof(name), "MCH-BDSM-mmap");
++    fd = open("/dev/mem", O_RDWR);
++
++    switch (gmch_dsm)
++    {
++      case 0x0: dsm_size = 0; break;
++      case 0x1: dsm_size = 32; break;
++      case 0x2: dsm_size = 64; break;
++      case 0x3: dsm_size = 96; break;
++      case 0x4: dsm_size = 128; break;
++      case 0x5: dsm_size = 160; break;
++      case 0x6: dsm_size = 192; break;
++      case 0x7: dsm_size = 224; break;
++      case 0x8: dsm_size = 256; break;
++      case 0x9: dsm_size = 288; break;
++      case 0xa: dsm_size = 320; break;
++      case 0xb: dsm_size = 352; break;
++      case 0xc: dsm_size = 384; break;
++      case 0xd: dsm_size = 416; break;
++      case 0xe: dsm_size = 448; break;
++      case 0xf: dsm_size = 480; break;
++      case 0x10: dsm_size = 512; break;
++     // default: /* panic */
++    }
++
++    dsm_size = dsm_size * 1024 * 1024;
++    map = mmap(NULL,dsm_size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,(bdsm_host & 0xFFF00000));
++
++    if (map == MAP_FAILED)
++    {
++        map = NULL;
++        Q35_DPRINTF("%s Setup BDSM: MAP_FAILED\n",__func__);
++    }
++
++    memory_region_init_ram_ptr(&bdsm, OBJECT(mch), name, dsm_size, map);
++}
++
++/* this function memory maps the region of host memory assigned to Stolen memory
++ * to the guest location provided by seabios. */
++static void mch_map_bdsm(PCIDevice *d, uint32_t bdsm_new)
++{
++    MemoryRegion *guest_memory = get_system_memory();
++    uint32_t bdsm_current = pci_default_read_config(d,MCH_CONFIG_BDSM,4);
++
++    if ( bdsm_current != bdsm_host && bdsm_current != 0 )
++    {
++        // remap
++        Q35_DPRINTF("%s Delete BDSM mapping: %x\n",__func__,(bdsm_current & 0xFFF00000));
++        memory_region_del_subregion(guest_memory, &bdsm);
++    }
++    Q35_DPRINTF("%s Add BDSM mapping: %x -> %x\n",__func__,bdsm_host,bdsm_new);
++    memory_region_add_subregion(guest_memory, (bdsm_new & 0xFFF00000), &bdsm);
++}
++
++/* Setup memory map for GTT Stolen Memory */
++static void mch_setup_bgsm(PCIDevice *d)
++{
++    int fd;
++    char name[64];
++    void *map;
++    bgsm_host = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),MCH_CONFIG_BGSM,4);
++    int gsm_size;
++    uint16_t gmch_host = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),MCH_CONFIG_GMCH,2);
++    uint16_t gmch_gsm = (gmch_host & 0x300) >> 8;
++    MCHPCIState *mch = MCH_PCI_DEVICE(d);
++
++    Q35_DPRINTF("%s Setup BGSM: %x\n",__func__,bgsm_host);
++
++    snprintf(name, sizeof(name), "MCH %04x:%02x:%02x.%x BGSM mmap",
++             0, 0, 0, 0);
++
++    fd = open("/dev/mem", O_RDWR);
++
++    switch (gmch_gsm)
++    {
++      case 0x2: gsm_size = 2; break;
++      case 0x1: gsm_size = 1; break;
++      case 0x0: gsm_size = 0; break;
++     // default: /* panic */
++    }
++
++    gsm_size = gsm_size * 1024 * 1024;
++
++    map = mmap(NULL,gsm_size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,(bgsm_host & 0xFFF00000));
++    if (map == MAP_FAILED)
++    {
++        map = NULL;
++        Q35_DPRINTF("%s Setup BGSM: MAP_FAILED\n",__func__);
++    }
++
++    memory_region_init_ram_ptr(&bgsm, OBJECT(mch), name, gsm_size, map);
++}
++
++/* this function memory maps the region of host memory assigned to GTT Stolen memory
++ * to the guest location provided by seabios. */
++static void mch_map_bgsm(PCIDevice *d, uint32_t bgsm_new)
++{
++    MemoryRegion *guest_memory = get_system_memory();
++    uint32_t bgsm_current = pci_default_read_config(d,MCH_CONFIG_BGSM,4);
++
++    if ( bgsm_current != bgsm_host && bgsm_current != 0)
++    {
++        // remap
++        Q35_DPRINTF("%s Delete BGSM mapping: %x\n",__func__,(bgsm_current & 0xFFF00000));
++        memory_region_del_subregion(guest_memory, &bgsm);
++    }
++    Q35_DPRINTF("%s Add BGSM mapping: %x -> %x\n",__func__,bgsm_host,bgsm_new);
++    memory_region_add_subregion(guest_memory, (bgsm_new & 0xFFF00000), &bgsm);
++}
++
++/* Setup memory map for TSEG */
++static void mch_setup_tseg(PCIDevice *d)
++{
++    int fd;
++    char name[64];
++    void *map;
++    tseg_host = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),MCH_CONFIG_TSEG,4);
++    int tseg_size = 8 * 1024 * 1024;
++    MCHPCIState *mch = MCH_PCI_DEVICE(d);
++
++    Q35_DPRINTF("%s Setup TSEG: %x\n",__func__,tseg_host);
++
++    snprintf(name, sizeof(name), "MCH-TSEG-mmap");
++
++    fd = open("/dev/mem", O_RDWR);
++
++    map = mmap(NULL,tseg_size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,(tseg_host & 0xFFF00000));
++    if (map == MAP_FAILED)
++    {
++        map = NULL;
++        Q35_DPRINTF("%s Setup TSEG: MAP_FAILED\n",__func__);
++    }
++
++    memory_region_init_ram_ptr(&tseg, OBJECT(mch), name, tseg_size, map);
++}
++
++/* this function memory maps the region of host memory assigned to TSEG
++ * to the guest location provided by seabios. */
++static void mch_map_tseg(PCIDevice *d, uint32_t tseg_new)
++{
++    MemoryRegion *guest_memory = get_system_memory();
++    uint32_t tseg_current = pci_default_read_config(d,MCH_CONFIG_TSEG,4);
++
++    if ( tseg_current != tseg_host && tseg_current != 0)
++    {
++        // remap
++        Q35_DPRINTF("%s Delete TSEG mapping: %x\n",__func__,(tseg_current & 0xFFF00000));
++        memory_region_del_subregion(guest_memory, &tseg);
++    }
++    Q35_DPRINTF("%s Add TSEG mapping: %x -> %x\n",__func__,tseg_host,tseg_new);
++    memory_region_add_subregion(guest_memory, (tseg_new & 0xFFF00000), &tseg);
++}
++
++static void mch_write_config_default(PCIDevice *d,
+                               uint32_t address, uint32_t val, int len)
+ {
+     MCHPCIState *mch = MCH_PCI_DEVICE(d);
+ 
++    Q35_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
++                0000, 00, PCI_SLOT(d->devfn),PCI_FUNC(d->devfn), address, len, val);
++
+     /* XXX: implement SMRAM.D_LOCK */
+     pci_default_write_config(d, address, val, len);
+ 
+@@ -308,6 +506,73 @@ static void mch_write_config(PCIDevice *d,
+     }
+ }
+ 
++static void mch_write_config(PCIDevice *d,
++                             uint32_t address, uint32_t val, int len)
++{
++    Q35_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
++                0000, 00, PCI_SLOT(d->devfn),PCI_FUNC(d->devfn), address, len, val);
++
++    /* PAVPC - Protected Audio Video Path Control */
++    if (IGD_PASSTHROUGH && ranges_overlap(address, len, 0x58, 4))
++    {
++        host_pci_write_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),address,len,val);
++    }
++    /* BDSM - */
++    else if (IGD_PASSTHROUGH && ranges_overlap(address, len, MCH_CONFIG_BDSM, 4))
++    {
++        mch_map_bdsm(d,val);
++        mch_write_config_default(d,address,val,len);
++    }
++    /* BGSM - */
++    else if (IGD_PASSTHROUGH && ranges_overlap(address, len, MCH_CONFIG_BGSM, 4))
++    {
++        mch_map_bgsm(d,val);
++        mch_write_config_default(d,address,val,len);
++    }
++    /* TSEG - */
++    else if (IGD_PASSTHROUGH && ranges_overlap(address, len, MCH_CONFIG_TSEG, 4))
++    {
++        mch_map_tseg(d,val);
++        mch_write_config_default(d,address,val,len);
++    }
++    else
++    {
++        mch_write_config_default(d,address,val,len);
++    }
++}
++
++static uint32_t mch_read_config(PCIDevice *d,
++                                uint32_t address, int len)
++{
++    uint32_t val;
++
++    if (IGD_PASSTHROUGH)
++    {
++        if (ranges_overlap(address, len, 0x2c, 2) || /* SVID - Subsystem Vendor Identification */
++            ranges_overlap(address, len, 0x2e, 2) || /* SID - Subsystem Identification */
++            ranges_overlap(address, len, 0x50, 2) || /* GMCH - SNB Graphics Control Register */
++            ranges_overlap(address, len, 0x58, 4))   /* PAVPC - Protected Audio Video Path Control  */
++        {
++            val = host_pci_read_config(0,PCI_SLOT(d->devfn),PCI_FUNC(d->devfn),address,len);
++        }
++        else
++        {
++            goto defaultread;
++        }
++    }
++    else
++    {
++defaultread:
++        val = pci_default_read_config(d,address,len);
++    }
++
++    Q35_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
++                0000, 00, PCI_SLOT(d->devfn),PCI_FUNC(d->devfn), address, len, val);
++
++    return val;
++
++}
++
+ static void mch_update(MCHPCIState *mch)
+ {
+     mch_update_pciexbar(mch);
+@@ -370,6 +635,69 @@ static int mch_init(PCIDevice *d)
+                  &mch->pam_regions[i+1], PAM_EXPAN_BASE + i * PAM_EXPAN_SIZE,
+                  PAM_EXPAN_SIZE);
+     }
++
++    mch_setup_bdsm(d);
++    mch_setup_bgsm(d);
++    mch_setup_tseg(d);
++
++    /* Unsure if this is important. but the following is as per INTEL spec
++     * which otherwise is non-conforming. */
++#ifdef CORRECT_CONFIG
++    /* PCICMD Register */
++    pci_set_word(d->wmask + D0F0_PCICMD,(D0F0_PCICMD_SERR | D0F0_PCICMD_PERR)); // set writable
++    pci_set_word(d->config + D0F0_PCICMD,(D0F0_PCICMD_MAE | D0F0_PCICMD_BME)); // set 1
++
++    /* PCISTS Register */
++    pci_set_word(d->w1cmask + D0F0_PCISTS,(D0F0_PCISTS_DPE | D0F0_PCISTS_SSE | D0F0_PCISTS_RMAS |
++                  D0F0_PCISTS_RTAS | D0F0_PCISTS_DPD));
++    pci_set_word(d->config + D0F0_PCISTS,(D0F0_PCISTS_CLIST | D0F0_PCISTS_FB2B));
++
++    /* CC Register */
++    /* No RW Registers */
++    //pci_set_byte(d->config + D0F0_CC + D0F0_CC_BCC, 0x06); /* indicating a bridge device */
++
++    /* HDR Register */
++    /* No RW Registers */
++    /* !nnz */
++
++    /* SVID and SID need not be changed */
++
++    /* PXPEPBAR - TODO? */
++    pci_set_quad(d->wmask + D0F0_PXPEPBAR, (D0F0_PXPEPBAR_PXPEPBAR | D0F0_PXPEPBAR_PXPEPBAREN)); // set writable
++
++    /* MCHBAR - TODO? */
++    pci_set_quad(d->wmask + D0F0_MCHBAR, (D0F0_MCHBAR_MCHBAR | D0F0_MCHBAR_MCHBAREN)); // set writable
++
++    /* GGC-GMCH */
++    /* RW Registers can be locked by GCCLCK - TODO, assumed RO */
++    //pci_set_word(d->config + D0F0_GGC, (data & (D0F0_GGC_VAMEN | D0F0_GGC_GGMS | D0F0_GGC_GMS | D0F0_GGC_GGCLCK)));
++
++    /* DEVEN */
++    pci_set_long(d->wmask + D0F0_DEVEN, D0F0_DEVEN_D0EN);
++    pci_set_long(d->config + D0F0_DEVEN, D0F0_DEVEN_D2EN);
++
++    /* DMIBAR */
++    pci_set_quad(d->wmask + D0F0_DMIBAR, (D0F0_DMIBAR_DMIBAR | D0F0_DMIBAR_DMIBAREN)); // set writable
++
++    /* TOM - Top Of Memory Register */
++    pci_set_quad(d->wmask + D0F0_TOM, (D0F0_TOM_TOM | D0F0_TOM_LOCK ));
++
++    /* TOUUD - Top Of Upper Usable DRAM Register */
++    pci_set_quad(d->wmask + D0F0_TOUUD, (D0F0_TOUUD_TOUUD | D0F0_TOUUD_LOCK ));
++
++    /* BDSM - Base Data of Stolen Memory Register */
++    pci_set_long(d->wmask + D0F0_BDSM, (D0F0_BDSM_BDSM | D0F0_BDSM_LOCK));
++
++    /* BGSM - Base of GTT Stolen Memory Register */
++    pci_set_long(d->wmask + D0F0_BGSM, (D0F0_BGSM_BGSM | D0F0_BGSM_LOCK));
++
++    /* TSEG - G Memory Base Register */
++    pci_set_long(d->wmask + D0F0_TSEG, (D0F0_TSEG_TSEGMB | D0F0_TSEG_LOCK));
++
++    /* TOLUD - Top of Low Usable DRAM */
++    pci_set_long(d->wmask + D0F0_TOLUD, (D0F0_TOLUD_TOLUD | D0F0_TOLUD_LOCK));
++#endif
++
+     return 0;
+ }
+ 
+@@ -390,6 +718,7 @@ static void mch_class_init(ObjectClass *klass, void *data)
+ 
+     k->init = mch_init;
+     k->config_write = mch_write_config;
++    k->config_read = mch_read_config;
+     dc->reset = mch_reset;
+     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
+     dc->desc = "Host bridge";
+@@ -403,6 +732,16 @@ static void mch_class_init(ObjectClass *klass, void *data)
+      * host-facing part, which can't be device_add'ed, yet.
+      */
+     dc->cannot_instantiate_with_device_add_yet = true;
++
++    /* XEN code suggests these values should match the host.
++     * However, it's not that simple because currently seabios expects
++     * either PII3X or Q35.
++     * Further more, I have only found reason for the LPC to match the host
++     * for the PCH identification. No mention about the host-bridge. */
++
++//    k->vendor_id = host_pci_read_config(0,0,0,0x00,2);
++//    k->device_id = host_pci_read_config(0,0,0,0x02,2);
++//    k->revision = host_pci_read_config(0,0,0,0x08,1);
+ }
+ 
+ static const TypeInfo mch_info = {
+diff --git a/hw/pci/pci.c b/hw/pci/pci.c
+index 42995e6..041f6f1 100644
+--- a/hw/pci/pci.c
++++ b/hw/pci/pci.c
+@@ -2,6 +2,8 @@
+  * QEMU PCI bus manager
+  *
+  * Copyright (c) 2004 Fabrice Bellard
++ *    2014 Andrew Barnes <andy@outsideglobe.com> IGD Support
++ *        Temporarily extended to provide host config read/write.
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -37,9 +39,9 @@
+ #include "exec/address-spaces.h"
+ #include "hw/hotplug.h"
+ 
+-//#define DEBUG_PCI
++/* #define DEBUG_PCI */
+ #ifdef DEBUG_PCI
+-# define PCI_DPRINTF(format, ...)       printf(format, ## __VA_ARGS__)
++# define PCI_DPRINTF(format, ...)       printf("pci:" format, ## __VA_ARGS__)
+ #else
+ # define PCI_DPRINTF(format, ...)       do { } while (0)
+ #endif
+@@ -60,6 +62,81 @@ static Property pci_props[] = {
+     DEFINE_PROP_END_OF_LIST()
+ };
+ 
++/* Provides config reads from the host */
++uint32_t host_pci_read_config(int bus, int slot, int fn, uint32_t address, int len)
++{
++    uint32_t val = 0;
++    int fd;
++    int domain = 0;
++    ssize_t ret;
++    char dir[128], name[128];
++
++    snprintf(dir, sizeof(dir), "/sys/bus/pci/devices/%04x:%02x:%02x.%x/",
++             domain, bus, slot, fn);
++    snprintf(name, sizeof(name), "%sconfig", dir);
++
++    fd = open(name, O_RDONLY);
++
++    if (fd >= 0)
++    {
++        do
++        {
++            ret = pread(fd,&val,len,address);
++        } while ((ret < 0) && (errno == EINTR || errno == EAGAIN));
++
++        if (ret != len)
++        {
++            PCI_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %s ret=%zd error=%d\n",
++                 __func__, 0000, bus, slot, fn, address, len, "pread Failed",ret,errno);
++            val = (1UL << (len * 8)) - 1;
++        }
++    }
++    else
++    {
++        PCI_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %s\n",
++                 __func__, 0000, bus, slot, fn, address, len, "Open Failed");
++    }
++
++    PCI_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n",
++                 __func__, 0000, bus, slot, fn, address, len, val);
++    return val;
++}
++
++/* Provides config writes to the host*/
++void host_pci_write_config(int bus, int slot, int fn, uint32_t address, int len, uint32_t val)
++{
++    int fd;
++    int domain = 0;
++    ssize_t ret;
++    char dir[128], name[128];
++
++    snprintf(dir, sizeof(dir), "/sys/bus/pci/devices/%04x:%02x:%02x.%x/",
++             domain, bus, slot, fn);
++    snprintf(name, sizeof(name), "%sconfig", dir);
++
++    fd = open(name, O_RDWR);
++
++    if (fd >= 0)
++    {
++        do
++        {
++            ret = pwrite(fd,&val,len,address);
++        } while ((ret < 0) && (errno == EINTR || errno == EAGAIN));
++
++
++        if (ret != len)
++        {
++            PCI_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x %s ret=%zd error=%d\n",
++                 __func__, 0000, bus, slot, fn, address, len, val, "pread Failed",ret,errno);
++        }
++    }
++    else
++    {
++        PCI_DPRINTF("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %s\n",
++                 __func__, 0000, bus, slot, fn, address, len, "Open Failed");
++    }
++}
++
+ static const VMStateDescription vmstate_pcibus = {
+     .name = "PCIBUS",
+     .version_id = 1,
+diff --git a/include/hw/nvram/fw_cfg.h b/include/hw/nvram/fw_cfg.h
+index 72b1549..04cb1f9 100644
+--- a/include/hw/nvram/fw_cfg.h
++++ b/include/hw/nvram/fw_cfg.h
+@@ -73,6 +73,8 @@ void fw_cfg_add_callback(FWCfgState *s, uint16_t key, FWCfgCallback callback,
+                          void *callback_opaque, void *data, size_t len);
+ void fw_cfg_add_file(FWCfgState *s, const char *filename, void *data,
+                      size_t len);
++void fw_cfg_update_file(FWCfgState *s, const char *filename, void *data,
++                        size_t len);
+ void fw_cfg_add_file_callback(FWCfgState *s, const char *filename,
+                               FWCfgReadCallback callback, void *callback_opaque,
+                               void *data, size_t len);
+diff --git a/include/hw/pci-host/q35.h b/include/hw/pci-host/q35.h
+index d9ee978..abb795e 100644
+--- a/include/hw/pci-host/q35.h
++++ b/include/hw/pci-host/q35.h
+@@ -4,6 +4,7 @@
+  * Copyright (c) 2009 Isaku Yamahata <yamahata at valinux co jp>
+  *                    VA Linux Systems Japan K.K.
+  * Copyright (C) 2012 Jason Baron <jbaron@redhat.com>
++ *               2014 Andrew Baranes <andy@outsideglobe.com> IGD Support
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -85,6 +86,165 @@ typedef struct Q35PCIHost {
+ 
+ /* D0:F0 configuration space */
+ #define MCH_HOST_BRIDGE_REVISION_DEFAULT       0x0
++#define D0F0_VID                               0x00                         /* 16 bits RO */
++#define D0F0_VID_SIZE                          2                            /* 2 Bytes */
++
++
++#define D0F0_DID                               0x02                         /* 16 bits RO */
++#define D0F0_DID_SIZE                          2                            /* 2 Bytes */
++
++
++#define D0F0_PCICMD                            0x04                         /* 16 bits */
++                                                                            /* 15:10 RO RESERVED */
++#define D0F0_PCICMD_FB2B                       0x200                        /* 9 RO=0 Fast back-to-back Enable */
++#define D0F0_PCICMD_SERR                       0x100                        /* 8 RW */
++#define D0F0_PCICMD_ADSTEP                     0x80                         /* 7 RO=0 Address/Data Stepping Enable */
++#define D0F0_PCICMD_PERR                       0x40                         /* 6 RW */
++#define D0F0_PCICMD_VGASNOOP                   0x20                         /* 5 RO=0 VGA Palette Snoop Enable */
++#define D0F0_PCICMD_MWI                        0x10                         /* 4 RO=0 Memory Write and Invalidate Enable */
++                                                                            /* 3 RO RESERVED */
++#define D0F0_PCICMD_BME                        0x04                         /* 2 RO=1 Bus Master Enable */
++#define D0F0_PCICMD_MAE                        0x02                         /* 1 RO=1 Memory Access Enable */
++#define D0F0_PCICMD_IOAE                       0x01                         /* 0 RO=0 I/O Access Enable */
++#define D0F0_PCICMD_SIZE                       2                            /* 2 Bytes */
++
++
++#define D0F0_PCISTS                            0x06                         /* 16 bits */
++#define D0F0_PCISTS_DPE                        0x8000                       /* 15 RW1C Detected Parity Error */
++#define D0F0_PCISTS_SSE                        0x4000                       /* 14 RW1C Signaled System Error */
++#define D0F0_PCISTS_RMAS                       0x2000                       /* 13 RW1C Received Master Abort Status */
++#define D0F0_PCISTS_RTAS                       0x1000                       /* 12 RW1C Reveived Target Abort Status */
++#define D0F0_PCISTS_STAS                       0x800                        /* 11 RO=0 Signaled Target Abort Status */
++#define D0F0_PCISTS_DEVT_MASK                  0x600                        /* 10:9 RO=DEVSEL_FAST DEVSEL Timing */
++#define D0F0_PCISTS_DEVT_FAST                  0x000                        /* DEVSEL_FAST=00 */
++#define D0F0_PCISTS_DPD                        0x100                        /* 8 RW1C Master Data parity Error Detected */
++#define D0F0_PCISTS_FB2B                       0x80                         /* 7 RO=1 Fast Back-to-Back */
++                                                                            /* 6 bitpos RO RESERVED */
++#define D0F0_PCISTS_MC66                       0x20                         /* 5 RO=0 66 MHz Capable */
++#define D0F0_PCISTS_CLIST                      0x10                         /* 4 RO=1 Capability List */
++                                                                            /* 3:0 bitpos RO RESERVED */
++#define D0F0_PCISTS_SIZE                       2                            /* 2 Bytes */
++
++
++#define D0F0_RID                               0x08                         /* 8 bits RO */
++#define D0F0_RID_SIZE                          1                            /* 1 Byte */
++
++
++#define D0F0_CC                                0x09                         /* 24 bits */
++#define D0F0_CC_BCC                            0x800000                     /* 23:16 RO=06 Base Class Code indicating a Bridge Device */
++#define D0F0_CC_SUBCC                          0x8000                       /* 15:8 RO=00 Sub-Class Code indicating a  Host Bridge */
++#define D0F0_CC_PI                             0x80                         /* 7:0 RO=00 Programming Interface */
++#define D0F0_CC_SIZE                           3                            /* 3 Bytes */
++
++
++#define D0F0_HDR                               0x0e                         /* 7:0 RO=00 indicating single function */
++#define D0F0_HDR_SIZE                          1                            /* 1 Byte */
++
++
++#define D0F0_SVID                              0x2c                         /* 15:0 RW-O Subsytem Vendor ID */
++#define D0F0_SVID_SIZE                         2                            /* 2 Bytes */
++
++
++#define D0F0_SID                               0x2e                         /* 15:0 RW-O Subsytem ID */
++#define D0F0_SID_SIZE                          2                            /* 2 Bytes */
++
++
++#define D0F0_PXPEPBAR                          0x40                         /* 64 bits PCI Express Egrees Port Base Address Register */
++                                                                            /* 63:39 RO RESERVED */
++#define D0F0_PXPEPBAR_PXPEPBAR                 Q35_MASK(64, 38, 12)         /* 38:12 RW PXPEPBAR */
++                                                                            /* 11:1 RO RESERVED */
++#define D0F0_PXPEPBAR_PXPEPBAREN               0x01                         /* 0 RW PXPEPBAR Enable */
++#define D0F0_PXPEPBAR_SIZE                     8                            /* 8 Bytes */
++
++
++#define D0F0_MCHBAR                            0x48                         /* 64 bits Host Memory Mapped Register Range Base */
++                                                                            /* 63:39 RO RESERVED */
++#define D0F0_MCHBAR_MCHBAR                     Q35_MASK(64, 38, 15)         /* 38:15 RW MCHBAR */
++                                                                            /* 14:1 RO RESERVED */
++#define D0F0_MCHBAR_MCHBAREN                   0x01                         /* 0 RW MCHBAR Enable */
++#define D0F0_MCHBAR_SIZE                       8                            /* 8 Bytes */
++
++
++#define D0F0_GGC                               0x50                         /* 16 bits GMCH Graphics Control Register */
++                                                                            /* 15 RO RESERVED */
++#define D0F0_GGC_VAMEN                         0x4000                       /* 14 RW-L Versatile Acceleration Mode Enabled */
++                                                                            /* 13:10 RO RESERVED */
++#define D0F0_GGC_GGMS                          0x200                        /* 9:8 RW-L GTT Graphics Memory Size */
++#define D0F0_GGC_GMS                           Q35_MASK(16, 7, 3)           /* 7:3 RW-L Graphics Mode Select */
++                                                                            /* 2 RO RESERVED */
++#define D0F0_GGC_IVD                           0x2                          /* 1 RW-L IGD VGA Disable */
++#define D0F0_GGC_GGCLCK                        0x1                          /* 0 RW-KL GGC Lock */
++#define D0F0_GGC_SIZE                          2                            /* 2 Bytes */
++
++#define D0F0_DEVEN                             0x54                         /* 32 bits Device Enable Register */
++                                                                            /* 31:15 RO RESERVED */
++                                                                            /* 14 RO RESERVED */
++#define D0F0_DEVEN_D6F0EN                      0x2000                       /* 13 RW-L PEG60 Enable */
++                                                                            /* 12:8 RO RESERVED */
++                                                                            /* 7 RO RESERVED */
++                                                                            /* 6:5 RO RESERVED */
++#define D0F0_DEVEN_D2EN                        0x10                         /* 4 RW-L Internal Graphics Engine */
++#define D0F0_DEVEN_D1F0EN                      0x8                          /* 3 RW-L PEG10 Enable */
++#define D0F0_DEVEN_D1F1EN                      0x4                          /* 2 RW-L PEG11 Enable */
++#define D0F0_DEVEN_D1F2EN                      0x2                          /* 1 RW-L PEG12 Enable */
++#define D0F0_DEVEN_D0EN                        0x1                          /* 0 RO=1 Host Bridge */
++#define D0F0_DEVEN_SIZE                        4                            /* 4 Bytes */
++
++
++#define D0F0_PAVPC                             0x58                         /* Protected Audio Video Path Control */
++
++#define D0F0_DMIBAR                            0x68                         /* 64 bits Root Complex Register Range Base Address Register */
++                                                                            /* 63:39 RO RESERVED */
++#define D0F0_DMIBAR_DMIBAR                     Q35_MASK(64, 38, 12)         /* 38:12 DMI Base Address */
++                                                                            /* 11:1 RO RESERVED */
++#define D0F0_DMIBAR_DMIBAREN                   0x01                         /* 0 RW DMIBAR Enable */
++#define D0F0_DMIBAR_SIZE                       8                            /* 8 Bytes */
++
++
++#define D0F0_TOM                               0xa0                         /* 64 bits Top of memory register */
++                                                                            /* 63:39 RO Reserved */
++#define D0F0_TOM_TOM                           Q35_MASK(64,38,20)           /* 38:20 RW-L Top of Memory */
++                                                                            /* 19:1 RO Reserved */
++#define D0F0_TOM_LOCK                          0x1                          /* 0 RW-KL Lock */
++#define D0F0_TOM_SIZE                          8                            /* 8 Bytes */
++
++
++#define D0F0_TOUUD                             0xa8                         /* 64 bits Top of Upper Usable DRAM Register */
++                                                                            /* 63:39 RO Reserved */
++#define D0F0_TOUUD_TOUUD                       Q35_MASK(64,38,20)           /* 38:20 RW-L Top of Upper Usable DRAM Register */
++                                                                            /* 19:1 RO Reserved */
++#define D0F0_TOUUD_LOCK                        0x1                          /* 0 RW-KL Lock */
++#define D0F0_TOUUD_SIZE                        8                            /* 8 Bytes */
++
++
++#define D0F0_BDSM                              0xb0                         /* 32 bits Base Data of Stolen Memory Register */
++#define D0F0_BDSM_BDSM                         Q35_MASK(32,31,20)           /* 31:20 RW-L Graphics Base of Stolen Memory (BDSM) */
++                                                                            /* 19:1 RO Reserved */
++#define D0F0_BDSM_LOCK                         0x1                          /* 0 RW-KL Lock */
++#define D0F0_BDSM_SIZE                         4                            /* 4 Bytes */
++
++
++#define D0F0_BGSM                              0xb4                         /* 32 bits Base of GTT Stolen Memory Register */
++#define D0F0_BGSM_BGSM                         Q35_MASK(32,31,20)           /* 31:20 RW-L Graphics Base of GTT Stolen Memory (BGSM) */
++                                                                            /* 19:1 RO Reserved */
++#define D0F0_BGSM_LOCK                         0x1                          /* 0 RW-KL Lock */
++#define D0F0_BGSM_SIZE                         4                            /* 4 Bytes */
++
++
++#define D0F0_TSEG                              0xb8                         /* 32 bits G Memory Base Register */
++#define D0F0_TSEG_TSEGMB                       Q35_MASK(32,31,20)           /* 31:20 RW-L TSEG Memory Base (TSEGMB) */
++                                                                            /* 19:1 RO Reserved */
++#define D0F0_TSEG_LOCK                         0x1                          /* 0 RW-KL Lock */
++#define D0F0_TSEG_SIZE                         4                            /* 4 Bytes */
++
++
++#define D0F0_TOLUD                             0xbc                         /* 32 bits Top of Low Usable DRAM */
++#define D0F0_TOLUD_TOLUD                       Q35_MASK(32, 31, 20)         /* 31:20 RW-L TOLUD */
++                                                                            /* 19:1 RO RESERVED */
++#define D0F0_TOLUD_LOCK                        0x1                          /* 0 RW-KL Lock */
++#define D0F0_TOLUD_SIZE                        4                            /* 4 Bytes */
++
++#define MCH_HOST_BRIDGE_REVISION_DEFUALT       0x0
+ 
+ #define MCH_HOST_BRIDGE_PCIEXBAR               0x60    /* 64bit register */
+ #define MCH_HOST_BRIDGE_PCIEXBAR_SIZE          8       /* 64bit register */
+diff --git a/include/hw/pci/pci.h b/include/hw/pci/pci.h
+index c352c7b..d3bc224 100644
+--- a/include/hw/pci/pci.h
++++ b/include/hw/pci/pci.h
+@@ -338,6 +338,9 @@ typedef PCIINTxRoute (*pci_route_irq_fn)(void *opaque, int pin);
+ #define PCI_BUS(obj) OBJECT_CHECK(PCIBus, (obj), TYPE_PCI_BUS)
+ #define TYPE_PCIE_BUS "PCIE"
+ 
++uint32_t host_pci_read_config(int bus, int slot, int fn, uint32_t address, int len);
++void host_pci_write_config(int bus, int slot, int fn, uint32_t address, int len, uint32_t val);
++
+ bool pci_bus_is_express(PCIBus *bus);
+ bool pci_bus_is_root(PCIBus *bus);
+ void pci_bus_new_inplace(PCIBus *bus, size_t bus_size, DeviceState *parent,
+diff --git a/include/hw/pci/pci_ids.h b/include/hw/pci/pci_ids.h
+index e597070..b76c61b 100644
+--- a/include/hw/pci/pci_ids.h
++++ b/include/hw/pci/pci_ids.h
+@@ -130,7 +130,19 @@
+ #define PCI_DEVICE_ID_INTEL_ICH9_5       0x2919
+ #define PCI_DEVICE_ID_INTEL_ICH9_6       0x2930
+ #define PCI_DEVICE_ID_INTEL_ICH9_7       0x2916
+-#define PCI_DEVICE_ID_INTEL_ICH9_8       0x2918
++
++/* TODO: Replace this hack for a non-hack!
++ * PCI_DEVICE_ID_INTEL_ICH9_8 must be set to
++ * `setpci -s 00:1f.0 0x02.w` (LPC device id)
++ * of the host - so that guest LPC represents
++ * the archiecture of device 2 (IGD). This is
++ * important to i915 kernel module */
++#define BEARLAKE    			0x2918 // QEMU DEFAULT
++#define COUGARPOINT 			0x1c4e
++#define PANTHERPOINT			0x
++#define LYNXPOINT   			0x8c4e
++
++#define PCI_DEVICE_ID_INTEL_ICH9_8       COUGARPOINT
+ 
+ #define PCI_DEVICE_ID_INTEL_82801I_UHCI1 0x2934
+ #define PCI_DEVICE_ID_INTEL_82801I_UHCI2 0x2935
