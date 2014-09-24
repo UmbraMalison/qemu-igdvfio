@@ -9,7 +9,6 @@ The code in this project is specifically written for the following platform:
 *   HOST-BRIDGE: 8086:0100
 *   GPU: 8086:0102
 *   LPC: 8086:1c4e
-*   SMBUS: 8086:1c22
 
 
 Usage
