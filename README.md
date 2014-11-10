@@ -1,6 +1,5 @@
-qemu-igdvfio
-============
-
+PROJECT HAS MOVED
+=================
 
 This Project has moved. The information here may not be correct and the code is not maintained.
 
@@ -9,7 +8,8 @@ www.outsideglobe.com/igdvfio
 
 
 
-
+qemu-igdvfio
+============
 
 Extending VFIO framework to support Intel Integrated Graphics Devices
 
